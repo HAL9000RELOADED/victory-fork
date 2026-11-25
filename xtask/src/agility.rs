@@ -171,7 +171,7 @@ mod tests {
     use std::io::Write;
     use flate2::{Compression, write::DeflateEncoder};
     /// A zip with one stored and one deflated file, written here.
-    fn zip(files: &[(&str, &[u8], bool)]) -> Vec<u8> {
+    fn zip(files: &[(&str, &[u8], bool)]) -> Result<Vec<u8>> {
         let (mut out, mut central) = (Vec::new(), Vec::new());
         for (name, data, deflate) in files {
             let packed = if *deflate {
@@ -218,7 +218,7 @@ mod tests {
         out.extend((central.len() as u32).to_le_bytes());
         out.extend(start.to_le_bytes());
         out.extend([0; 2]);
-        out
+        Ok(out)
     }
 
     #[test]
@@ -227,7 +227,8 @@ mod tests {
         let z = zip(&[
             ("a/stored.txt", b"plain", false),
             ("b/packed.txt", &text, true),
-        ]);
+        ])
+        .unwrap();
         assert_eq!(extract(&z, "a/stored.txt").unwrap(), b"plain");
         assert_eq!(extract(&z, "b/packed.txt").unwrap(), text);
         assert!(extract(&z, "missing").is_err());
