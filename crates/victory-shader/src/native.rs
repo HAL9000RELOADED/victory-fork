@@ -503,12 +503,23 @@ pub fn fspx_program(part: &[u8]) -> Result<NativeProgram, ShaderError> {
     let threads = |i: usize| u16_at(packet, PACKET_THREADS + 2 * i).map(u32::from);
     let mut layout: Vec<RootParam> = Vec::new();
     let mut used = Vec::new();
-    for e in meta
+    let records = meta
         .get(FSPX_RECORDS..)
         .unwrap_or(&[])
         .as_chunks::<FSPX_RECORD>()
-        .0
-    {
+        .0;
+    // User SGPRs the program is given (COMPUTE_PGM_RSRC2.USER_SGPR), and the
+    // first user-data dword of every parameter the records place in them:
+    // the records do not say how many dwords a root-constants parameter
+    // holds, so it runs up to the next parameter or to the last user SGPR.
+    let user_sgprs = (u32_at(packet, PACKET_RSRC2)? >> 1) & 0x1f;
+    let starts: Vec<u8> = records
+        .iter()
+        .take_while(|e| e[0] != 0x43)
+        .filter(|e| e[0] == 0x41 && RootType::from_raw(e[5].into()) != RootType::ImmediateSampler)
+        .map(|e| e[21])
+        .collect();
+    for e in records {
         match e[0] {
             0x41 => {}
             0x42 => continue,
@@ -537,6 +548,17 @@ pub fn fspx_program(part: &[u8]) -> Result<NativeProgram, ShaderError> {
             RootType::Descriptor => 2,
             // The code holds its words; no user data.
             RootType::ImmediateSampler => 0,
+            RootType::Constants => {
+                let end = starts
+                    .iter()
+                    .map(|&s| u32::from(s))
+                    .filter(|&s| s > u32::from(u.user_data))
+                    .min()
+                    .unwrap_or(user_sgprs);
+                end.checked_sub(u.user_data.into())
+                    .filter(|&n| n > 0)
+                    .ok_or(Malformed("FSPX root constants past the user SGPRs"))?
+            }
             _ => return Err(Malformed("an FSPX resource of an unknown root type")),
         };
         if sgprs > 0 && !layout.iter().any(|p| p.slot == u.slot) {
@@ -1311,11 +1333,63 @@ pub(crate) mod tests {
             false,
             &[fspx_resource(2, 0, 0, 0, 4, 0)],
         );
+        // RSRC2 gives the program no user SGPRs, so the constants have none.
         assert!(
             native_programs(&root_constants).is_err(),
-            "unknown root type"
+            "root constants past the user SGPRs"
         );
         root_constants.truncate(40);
         assert!(native_programs(&root_constants).is_err(), "truncated");
+        let unknown_root = fspx(
+            &code,
+            0,
+            [64, 1, 1],
+            false,
+            &[fspx_resource(2, 2, 0, 0, 4, 0)],
+        );
+        assert!(native_programs(&unknown_root).is_err(), "unknown root type");
+    }
+
+    /// Root constants: the records give no dword count, so they hold the
+    /// user SGPRs up to the next parameter, or to the last one RSRC2 gives.
+    #[test]
+    fn fspx_root_constants_take_the_user_sgprs_up_to_the_next_parameter() {
+        let code = [0x00, 0x00, 0x81, 0xBF];
+        let user_sgprs = |n: u32| n << 1;
+        let roots = |records: &[[u8; 32]], rsrc2: u32| -> Vec<(RootType, u32, u8, u8)> {
+            native_programs(&fspx(&code, rsrc2, [64, 1, 1], false, records)).unwrap()[0]
+                .layout
+                .iter()
+                .map(|r| (r.root, r.sgprs, r.user_data, r.slot))
+                .collect()
+        };
+        // Last parameter: two tables, then constants up to USER_SGPR 12.
+        let last = [
+            fspx_resource(2, 3, 0, 0, 4, 0),
+            fspx_resource(2, 3, 0, 1, 5, 1),
+            fspx_resource(2, 0, 0, 500, 6, 2),
+        ];
+        assert_eq!(
+            roots(&last, user_sgprs(12)),
+            [
+                (RootType::Table, 1, 4, 0),
+                (RootType::Table, 1, 5, 1),
+                (RootType::Constants, 6, 6, 2)
+            ]
+        );
+        // Followed by a root descriptor: up to that parameter.
+        let between = [
+            fspx_resource(3, 3, 0, 0, 4, 0),
+            fspx_resource(2, 0, 0, 500, 5, 1),
+            fspx_resource(0, 1, 0, 0, 7, 2),
+        ];
+        assert_eq!(
+            roots(&between, user_sgprs(9)),
+            [
+                (RootType::Table, 1, 4, 0),
+                (RootType::Constants, 2, 5, 1),
+                (RootType::Descriptor, 2, 7, 2)
+            ]
+        );
     }
 }
