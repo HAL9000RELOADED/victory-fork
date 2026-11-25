@@ -4,8 +4,10 @@
 //! translated pipeline needs (issue #84). victory.exe asks D3D12 for a newer
 //! runtime (`apps/victory/src/agility.rs`); this puts Microsoft's
 //! `D3D12Core.dll`, and the debug layer's `d3d12SDKLayers.dll`, where it
-//! looks: `<target>/<profile>/D3D12/`. `victory-shader`'s test executables
-//! use it from there too (`crates/victory-shader/src/agility.rs`).
+//! looks: `<target>/<profile>/D3D12/`. The `victory-shader` and `victory-gpu`
+//! test executables use it from there too (`src/agility.rs` in each crate).
+//! All three export the SDK symbols only when the folder is there, so a
+//! build without it keeps the in-box runtime.
 //!
 //! The DLLs are Microsoft's, so they never enter the repository (asset
 //! policy): they are fetched from nuget.org, at a pinned version whose
@@ -21,8 +23,8 @@ use std::io::Read;
 use flate2::read::DeflateDecoder;
 
 /// The package version. Its minor number is `D3D12SDKVersion` in
-/// `apps/victory/src/agility.rs` and `crates/victory-shader/src/agility.rs`:
-/// keep the three in step.
+/// `apps/victory/src/agility.rs` and `src/agility.rs` in the `victory-shader`
+/// and `victory-gpu` crates: keep the four in step.
 const VERSION: &str = "1.620.2";
 /// The package's SHA-512, as nuget.org's catalog gives it (base64
 /// `1oP/f1cm…MnNQ==`).
@@ -51,15 +53,20 @@ pub fn run(root: &Path, target: &Path) -> Result<()> {
         }
         println!("D3D12 Agility SDK {VERSION}: {}", dir.display());
     }
-    // victory-shader's build script exports the runtime to its tests only
-    // when it is there, and does not watch for it while it is missing (that
-    // would rebuild the crate every time): make cargo rerun it.
-    let script = root.join("crates/victory-shader/build.rs");
-    std::fs::File::options()
-        .append(true)
-        .open(&script)
-        .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-        .with_context(|| format!("touching {}", script.display()))?;
+    // All three build scripts export the runtime only when it is there, and
+    // do not watch for it while it is missing (that would rebuild the crate
+    // every time): make cargo rerun them.
+    for script in [
+        "apps/victory/build.rs",
+        "crates/victory-shader/build.rs",
+        "crates/victory-gpu/build.rs",
+    ] {
+        std::fs::File::options()
+            .append(true)
+            .open(root.join(script))
+            .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+            .with_context(|| format!("touching {script}"))?;
+    }
     Ok(())
 }
 
@@ -235,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn version_matches_the_sdk_version_victory_exports() {
+    fn version_matches_the_sdk_version_all_exports() {
         let minor = VERSION.split('.').nth(1).unwrap();
         for (path, source) in [
             (
@@ -245,6 +252,10 @@ mod tests {
             (
                 "crates/victory-shader/src/agility.rs",
                 include_str!("../../crates/victory-shader/src/agility.rs"),
+            ),
+            (
+                "crates/victory-gpu/src/agility.rs",
+                include_str!("../../crates/victory-gpu/src/agility.rs"),
             ),
         ] {
             assert!(

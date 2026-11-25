@@ -5,10 +5,10 @@
 //! which every translated pipeline uses. D3D12 looks for these two exports on
 //! the process's executable; when they name a runtime newer than the
 //! system's, it loads `D3D12Core.dll` from `D3D12SDKPath` (relative to the
-//! executable) instead. `cargo xtask agility` puts it there. Without the
-//! folder, or on a system whose runtime is newer, the in-box one is used.
-//!
-//! `build.rs` exports both symbols.
+//! executable) instead. `cargo xtask agility` puts it there. `build.rs`
+//! exports both symbols only when the folder is there: with the exports but
+//! no DLL, device creation fails with `D3D12_ERROR_INVALID_REDIST`. Without
+//! the exports, the in-box runtime is used.
 #![allow(non_upper_case_globals)]
 
 /// The runtime's SDK version: the minor number of the
