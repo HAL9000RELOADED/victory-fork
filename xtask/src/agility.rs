@@ -16,6 +16,9 @@ use std::process::Command;
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha512};
 
+use std::io::Read;
+use flate2::read::DeflateDecoder;
+
 /// The package version. Its minor number is `D3D12SDKVersion` in
 /// `apps/victory/src/agility.rs`: keep the two in step.
 const VERSION: &str = "1.620.2";
@@ -131,8 +134,14 @@ fn extract(zip: &[u8], name: &str) -> Result<Vec<u8>> {
         let data = zip.get(data..data + packed).context("truncated zip")?;
         let out = match method {
             0 => data.to_vec(),
-            8 => miniz_oxide::inflate::decompress_to_vec(data)
-                .map_err(|e| anyhow::anyhow!("{name}: inflate failed: {e:?}"))?,
+            8 => {
+                let mut decoder = DeflateDecoder::new(data);
+                let mut buf = Vec::new();
+                decoder
+                    .read_to_end(&mut buf)
+                    .map_err(|e| anyhow::anyhow!("{name}: inflate failed: {e:?}"))?;
+                buf
+            }
             m => bail!("{name}: zip method {m} is not supported"),
         };
         ensure!(
@@ -148,13 +157,20 @@ fn extract(zip: &[u8], name: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use std::io::Write;
+    use flate2::{Compression, write::DeflateEncoder};
     /// A zip with one stored and one deflated file, written here.
     fn zip(files: &[(&str, &[u8], bool)]) -> Vec<u8> {
         let (mut out, mut central) = (Vec::new(), Vec::new());
         for (name, data, deflate) in files {
             let packed = if *deflate {
-                miniz_oxide::deflate::compress_to_vec(data, 6)
+                let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(6));
+                encoder
+                    .write_all(data)
+                    .map_err(|e| anyhow::anyhow!("{name}: deflate failed: {e:?}"))?;
+                encoder
+                    .finish()
+                    .map_err(|e| anyhow::anyhow!("{name}: deflate finish failed: {e:?}"))?
             } else {
                 data.to_vec()
             };

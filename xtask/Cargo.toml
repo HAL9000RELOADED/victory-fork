@@ -11,7 +11,8 @@ publish.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 walkdir.workspace = true
-miniz_oxide.workspace = true
+zlib-rs.workspace = true
+flate2.workspace = true
 # SHA-512 of the Agility SDK package (`cargo xtask agility`).
 sha2 = "0.10"
 
