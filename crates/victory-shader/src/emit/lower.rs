@@ -4324,8 +4324,8 @@ impl<'a> Lower<'a> {
         let w = self.s.wave_size.unwrap_or(32);
         let group: u32 = self.s.threads.map_or(w, |t| t.iter().product());
         let zero = self.s.m.i32(0);
-        // A group that fits one host wave: its first thread is 0.
-        if group <= w {
+        // A group of 32 threads or fewer fits one host wave: its first thread is 0.
+        if group <= 32 {
             self.wave_base = Some(zero);
             return Some(zero);
         }
