@@ -1036,8 +1036,8 @@ fn lds_meetings(p: &crate::ir::Program, st: &Structured, all: &[bool]) -> Option
                 }
                 eprintln!("WAVE64-LDS region with reads and writes: {}", list.join("; "));
             }
-            return None;
         }
+        return None;
     }
     let mut meet = vec![(false, false); n];
     for b in 0..n {
