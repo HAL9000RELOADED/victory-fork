@@ -5,10 +5,13 @@
 //! which every translated pipeline uses. D3D12 looks for these two exports on
 //! the process's executable; when they name a runtime newer than the
 //! system's, it loads `D3D12Core.dll` from `D3D12SDKPath` (relative to the
-//! executable) instead. Without the folder, or on a system whose runtime is
-//! newer, the in-box one is used.
+//! executable) instead. On a system whose runtime is newer, the in-box one
+//! is used.
 //!
-//! `build.rs` exports both symbols.
+//! `build.rs` exports both symbols only when the runtime was in
+//! `<target>/<profile>/D3D12/` at build time (`cfg(agility_runtime)`): D3D12
+//! does not fall back to the in-box runtime when the named one is missing,
+//! it refuses the device. Built without it, the executable names no runtime.
 #![allow(non_upper_case_globals)]
 
 /// The runtime's SDK version: the minor number of the

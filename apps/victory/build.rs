@@ -1,8 +1,34 @@
+use std::path::PathBuf;
+
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(agility_runtime)");
     // The D3D12 Agility SDK exports (src/agility.rs): D3D12 finds them on
     // the executable. Only the MSVC linker takes /EXPORT on a binary.
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        println!("cargo:rustc-link-arg-bins=/EXPORT:D3D12SDKVersion,DATA");
-        println!("cargo:rustc-link-arg-bins=/EXPORT:D3D12SDKPath,DATA");
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+    // Exported only when the runtime is in this profile's `D3D12\` folder at
+    // build time: D3D12 uses the runtime an executable names only if it is
+    // there, and with the exports but no `D3D12Core.dll` device creation
+    // fails (D3D12_ERROR_INVALID_REDIST) instead of falling back to the
+    // in-box runtime. Without the folder the executable names none.
+    // OUT_DIR is <target>/<profile>/build/<package>-<hash>/out.
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    let core = out
+        .ancestors()
+        .nth(3)
+        .map(|profile| profile.join("D3D12").join("D3D12Core.dll"));
+    match core {
+        Some(core) if core.exists() => {
+            println!("cargo::rerun-if-changed={}", core.display());
+            println!("cargo::rustc-cfg=agility_runtime");
+            println!("cargo:rustc-link-arg-bins=/EXPORT:D3D12SDKVersion,DATA");
+            println!("cargo:rustc-link-arg-bins=/EXPORT:D3D12SDKPath,DATA");
+        }
+        _ => {
+            // Watching a missing file would rebuild the executable every
+            // time: after staging the runtime, touch this file.
+            println!("cargo::rerun-if-changed=build.rs");
+        }
     }
 }
