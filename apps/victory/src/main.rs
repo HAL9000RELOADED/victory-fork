@@ -3,6 +3,7 @@
 //! Every command reads the user's own files and writes only to stdout or to
 //! the user's cache directory (outside the repository).
 
+mod agility;
 mod census;
 mod inspect;
 #[cfg(all(windows, feature = "diagnostics"))]
@@ -187,6 +188,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let cli = Cli::parse();
+    // D3D12 reads the Agility exports off the executable; on Windows 10 they
+    // are what gets it past shader model 6.5.
+    let _ = agility::runtime_dir();
     match cli.command {
         Command::Inspect {
             file,
@@ -291,3 +295,4 @@ pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     );
     Ok(all)
 }
+
