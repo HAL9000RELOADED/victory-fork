@@ -638,6 +638,16 @@ pub(crate) fn gather_by_copy_kept() -> bool {
 /// same declarations), and a write to another host copy of the same bytes
 /// is not seen through this one on the card either way. A pipeline the
 /// layer does not know still ends the gathering whole.
+///
+/// NOT PROVEN EXACT (an independent review, 2026-11-26): three kinds of
+/// shader write are declared nowhere. (1) A buffer the shader picks from
+/// the view heap by an index it computes, and (2) title memory by address
+/// through a copy another list numbered: for programs that can do either
+/// the gathering still ends whole (`State::gather_ends`). (3) An entry of
+/// a descriptor array past the program's used-resource list, and a picked
+/// view that needs no stride: NOT covered. Before this switch is used for
+/// play, a run with it in turn and `VICTORY_INDIRECT_WINDOW_CHECK=1` must
+/// show that "differed" does not grow in the phases with it.
 pub(crate) fn gather_by_copy() -> bool {
     match gather_by_copy_mode() {
         0 => false,
@@ -1951,23 +1961,16 @@ void main() {
         );
         assert_eq!(after_src, initial_src, "src_args must remain untouched");
 
-        // The two groups of 64 records charge the budget one after the other
-        // in whichever order the card (or WARP, on several threads) runs them,
-        // and each takes its records in lane order: the two draws that fit are
-        // the first two real ones of the group that charged first, records 1
-        // and 2 of the first group or 64 and 65 of the second.
-        let kept_at: Vec<usize> = (0..RECORDS as usize)
-            .filter(|&i| out_words[i * 6] == (1 << 22) && out_words[i * 6 + 1] == 16)
-            .collect();
-        assert!(
-            kept_at == [1, 2] || kept_at == [64, 65],
-            "the first two real draws of the group that charged first fit the budget, not {kept_at:?}"
-        );
         let mut kept = 0usize;
         let mut zeroed = 0usize;
         for i in 0..RECORDS as usize {
             let rec = &out_words[i * 6..(i + 1) * 6];
             if rec[0] == (1 << 22) && rec[1] == 16 {
+                // WHICH two draws keep the budget is the order the card
+                // runs the threads in, which nothing fixes (the software
+                // device gave another two in five runs of seven): only how
+                // many is the clamp's to say, below.
+                assert_ne!(i, 0, "the record that is no draw charges nothing and is not kept as one");
                 kept += 1;
             } else {
                 assert_eq!((rec[0], rec[1]), (0, 0), "excess draw must be zeroed");
@@ -2587,7 +2590,8 @@ void work() {
         heap_pairs: [[Option<ID3D12DescriptorHeap>; 2]; 2],
         tables: [D3D12_GPU_DESCRIPTOR_HANDLE; 2],
         targets: [D3D12_CPU_DESCRIPTOR_HANDLE; 2],
-        depth_written: D3D12_CPU_DESCRIPTOR_HANDLE,
+        /// Kept beside `depth_tested` (the view the rig clears through when it is made).
+        _depth_written: D3D12_CPU_DESCRIPTOR_HANDLE,
         depth_tested: D3D12_CPU_DESCRIPTOR_HANDLE,
         stamps: ID3D12QueryHeap,
         back: ID3D12Resource,
@@ -2895,7 +2899,7 @@ void work() {
                     heap_pairs,
                     tables,
                     targets,
-                    depth_written,
+                    _depth_written: depth_written,
                     depth_tested,
                     stamps,
                     back,
