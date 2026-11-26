@@ -3136,6 +3136,7 @@ fn try_build_image_store_cs(dmask: u8, d16: bool) -> Result<HostShader, crate::S
         root_srvs: lowered.root_srvs,
         root_uavs: lowered.root_uavs,
         root_indexed_views: res.root_indexed_views,
+        half_views: lowered.half_views,
     };
 
     if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
@@ -3315,6 +3316,7 @@ fn vs_rt_and_viewport_index_exports_validate_and_create_pso() {
             root_srvs: lowered.root_srvs,
             root_uavs: lowered.root_uavs,
             root_indexed_views: res.root_indexed_views,
+            half_views: lowered.half_views,
         };
         if let Ok(mut v) =
             validator::Validator::load(validator::Validator::default_path().as_deref())
@@ -3612,6 +3614,7 @@ fn ps_sample_coverage_input_reads_coverage_mask() {
         root_srvs: Vec::new(),
         root_uavs: Vec::new(),
         root_indexed_views: Vec::new(),
+        half_views: Vec::new(),
     };
 
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -4460,7 +4463,7 @@ fn vop3_unsigned_add_sub_clamp() {
 }
 
 /// SOPK `op sdst, simm16`.
-const fn sopk(op: u8, sdst: u8, simm16: i16) -> u32 {
+const fn sopk_i16(op: u8, sdst: u8, simm16: i16) -> u32 {
     0xB000_0000 | (op as u32 & 0x1F) << 23 | (sdst as u32 & 0x7F) << 16 | (simm16 as u16) as u32
 }
 
@@ -4481,14 +4484,14 @@ fn signed_scalar_add_sub_scc_matches_rdna2() {
     // s_mov_b32 s6, s0; s_addk_i32 s6, +1 (SOPK 0x0F); s_cselect_b32 s7, 1, 0; v_mov_b32 v0, s7
     let addk_pos1 = build_valu_cs(&[
         s_mov_b32(6, 0),
-        sopk(0x0F, 6, 1),
+        sopk_i16(0x0F, 6, 1),
         sop2(0x0A, 7, 0x81, 0x80),
         vop1(0x001, 0, sgpr(7)),
     ]);
     // s_mov_b32 s6, s0; s_addk_i32 s6, -32768 (SOPK 0x0F); s_cselect_b32 s7, 1, 0; v_mov_b32 v0, s7
     let addk_neg_min = build_valu_cs(&[
         s_mov_b32(6, 0),
-        sopk(0x0F, 6, i16::MIN),
+        sopk_i16(0x0F, 6, i16::MIN),
         sop2(0x0A, 7, 0x81, 0x80),
         vop1(0x001, 0, sgpr(7)),
     ]);
@@ -4789,7 +4792,7 @@ fn cmp16_sdwa_preserves_word_selects() {
 
 /// VOP3P `op vdst, src0, src1, src2` with standard packed lane selects
 /// (`opsel = 0b000`, `opsel_hi = 0b111`) and optional `clamp`.
-const fn vop3p(op: u16, vdst: u8, src0: u16, src1: u16, src2: u16, clamp: bool) -> [u32; 2] {
+const fn vop3p_clamp(op: u16, vdst: u8, src0: u16, src1: u16, src2: u16, clamp: bool) -> [u32; 2] {
     [
         0x33 << 26
             | (op as u32 & 0x7F) << 16
@@ -4809,12 +4812,12 @@ fn v_pk_int16_clamp_saturates_as_rdna2() {
     let pack_i = |lo: i16, hi: i16| pack_u(lo as u16, hi as u16);
 
     // VOP3P opcodes: 0x00=mad_i16, 0x02=add_i16, 0x03=sub_i16, 0x09=mad_u16, 0x0a=add_u16, 0x0b=sub_u16.
-    let add_u16 = build_valu_cs(&vop3p(0x0a, 0, vgpr(1), vgpr(2), 0, true));
-    let sub_u16 = build_valu_cs(&vop3p(0x0b, 0, vgpr(1), vgpr(2), 0, true));
-    let mad_u16 = build_valu_cs(&vop3p(0x09, 0, vgpr(1), vgpr(2), vgpr(3), true));
-    let add_i16 = build_valu_cs(&vop3p(0x02, 0, vgpr(1), vgpr(2), 0, true));
-    let sub_i16 = build_valu_cs(&vop3p(0x03, 0, vgpr(1), vgpr(2), 0, true));
-    let mad_i16 = build_valu_cs(&vop3p(0x00, 0, vgpr(1), vgpr(2), vgpr(3), true));
+    let add_u16 = build_valu_cs(&vop3p_clamp(0x0a, 0, vgpr(1), vgpr(2), 0, true));
+    let sub_u16 = build_valu_cs(&vop3p_clamp(0x0b, 0, vgpr(1), vgpr(2), 0, true));
+    let mad_u16 = build_valu_cs(&vop3p_clamp(0x09, 0, vgpr(1), vgpr(2), vgpr(3), true));
+    let add_i16 = build_valu_cs(&vop3p_clamp(0x02, 0, vgpr(1), vgpr(2), 0, true));
+    let sub_i16 = build_valu_cs(&vop3p_clamp(0x03, 0, vgpr(1), vgpr(2), 0, true));
+    let mad_i16 = build_valu_cs(&vop3p_clamp(0x00, 0, vgpr(1), vgpr(2), vgpr(3), true));
 
     // add_u16 clamp: lo overflows (60000+10000 -> 65535), hi fits (100+200 -> 300)
     run_cases(

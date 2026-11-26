@@ -1897,6 +1897,7 @@ mod tests {
                 root_srvs: l.root_srvs,
                 root_uavs: l.root_uavs,
                 root_indexed_views: Vec::new(),
+                half_views: l.half_views,
             };
             // 32 dwords = 128 bytes = 8 elements of stride 16.
             let data: Vec<u32> = (0..32).map(|i| 1000 + i).collect();
