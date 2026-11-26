@@ -4324,11 +4324,6 @@ impl<'a> Lower<'a> {
         let w = self.s.wave_size.unwrap_or(32);
         let group: u32 = self.s.threads.map_or(w, |t| t.iter().product());
         let zero = self.s.m.i32(0);
-        // A group of 32 threads or fewer fits one host wave: its first thread is 0.
-        if group <= 32 {
-            self.wave_base = Some(zero);
-            return Some(zero);
-        }
         let lds = self.s.lds();
         let k = self.s.m.i32(slot);
         let ptr = self.s.m.element(e, lds, k);
@@ -8654,12 +8649,12 @@ impl<'a> Lower<'a> {
                 if self.local && !self.local_any {
                     return Err("a lane write in a half-wave");
                 }
-                self.lane_there()?;
                 let halves = self.exchange.as_ref().is_some_and(|e| !e.1) && !self.local;
                 if halves && !self.all_lanes(self.cur_ir) {
                     need(self.cur_ir);
                     return Err("a lane write where not every lane runs");
                 }
+                self.lane_there()?;
                 let me = self.console_lane();
                 let is = self.s.m.cmp(c, pred::EQ, me, lane);
                 let write = match guard {
