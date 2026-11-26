@@ -43,8 +43,8 @@ wrote; before it is committed it is scrubbed of the user's and the
 machine's names and paths, of the title's folder, file, product and
 program names, and of the title's own output lines. Nothing of the game is
 in it. Because logs are long, `xtask/src/policy.rs` gives the files
-directly under `diagnostics/` a rule of their own: a `.txt` up to 32 MiB
-that holds no binary data, or a gzipped `.txt.gz` up to 16 MiB. Pictures,
+directly under `diagnostics/` a rule of their own: a `.txt` up to 64 MiB
+that holds no binary data, or a gzipped `.txt.gz` up to 32 MiB. Pictures,
 frame shots and anything else a run produces are NOT published: they show
 the title.
 
@@ -59,7 +59,7 @@ user's dump), `test_titles`, and `cache_dir` for everything derived
 1. `.gitignore` keeps common data types out of `git status`.
 2. `cargo xtask policy` (run by the pre-commit hook; install with
    `cargo xtask install-hooks`) is an allowlist: files must have an allowed
-   type, be under 512 KiB, contain no binary data or known binary
+   type, be under 2 MiB, contain no binary data or known binary
    signatures, and hold no long hex/base64 runs. Exceptions need an entry
    with a reason in `xtask/src/policy.rs`.
 3. At runtime, everything that writes derived data calls
