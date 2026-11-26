@@ -6423,8 +6423,10 @@ impl<'a> Lower<'a> {
                 };
                 ((kind | u, 0x409), Some(kind))
             }
-            Fields::Buffer { idxen, format, .. } => {
-                let stride = used.map_or(0, |u| u.stride);
+            Fields::Buffer { .. } => {
+                // Untyped buffers (including structured buffers) are bound as
+                // raw views by the host (`raw_window`), matching `buffer()`;
+                // `getDimensions` below divides the byte count by `used.stride`.
                 let props = if un.starts_with("buffer_load_format")
                     || un.starts_with("buffer_store_format")
                 {
@@ -6437,8 +6439,6 @@ impl<'a> Lower<'a> {
                                     || self.format_load_read_as_halves(ui))
                         });
                     (10 | u, if halves { 0x405 } else { 0x409 })
-                } else if *idxen && format.is_none() && stride >= 4 && stride.is_multiple_of(4) {
-                    (12 | u, stride)
                 } else {
                     (11 | u, 0)
                 };
