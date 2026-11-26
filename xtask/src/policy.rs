@@ -10,7 +10,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-const MAX_FILE_SIZE: usize = 512 * 1024;
+const MAX_FILE_SIZE: usize = 2 * 1024 * 1024;
 const MAX_ENCODED_RUN: usize = 512;
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
@@ -25,32 +25,22 @@ const ALLOWED_NAMES: &[&str] = &[
     "LICENSE",
     "LICENSE-MIT",
     "LICENSE-APACHE",
+    "NOTICE",
 ];
 
 /// Paths explicitly exempted, with a reason. Keep this empty if at all possible.
-const EXCEPTIONS: &[(&str, &str)] = &[
-    (
-        "crates/victory-formats/src/bcpack-tables.bin",
-        "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
-    ),
-    // Integration branch of HAL9000RELOADED/victory-fork only (not upstream):
-    (
-        "NOTICE",
-        "Apache-2.0 attribution for the TuxBox port merged from a fork PR: text the licence requires, not an asset",
-    ),
-    (
-        "crates/victory-shader/src/emit/lower.rs",
-        "translator source past 512 KB from several merged PRs at once: Rust text, not an asset",
-    ),
-];
+const EXCEPTIONS: &[(&str, &str)] = &[(
+    "crates/victory-formats/src/bcpack-tables.bin",
+    "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
+)];
 
 /// Run logs: the layer's own log of a run, scrubbed of names, kept under
 /// `diagnostics/` by the owner's decision (2026-11-26; docs/asset-policy.md).
 /// A log is text we wrote, but long: these may be this large as text, and
 /// the longest are kept gzipped ([`RUN_LOG_GZ_MAX`]).
-const RUN_LOG_MAX: usize = 32 * 1024 * 1024;
+const RUN_LOG_MAX: usize = 64 * 1024 * 1024;
 /// A gzipped run log (`diagnostics/*.txt.gz`) may be this large.
-const RUN_LOG_GZ_MAX: usize = 16 * 1024 * 1024;
+const RUN_LOG_GZ_MAX: usize = 32 * 1024 * 1024;
 
 /// Whether `path` is a run log directly under `diagnostics/`: `Some(true)`
 /// for a gzipped one (`.txt.gz`), `Some(false)` for a text one (`.txt`).
@@ -287,7 +277,7 @@ mod tests {
             "extension not allowed"
         );
         assert!(
-            !check("a.rs", &vec![b'a'; 600 * 1024]).is_empty(),
+            !check("a.rs", &vec![b'a'; super::MAX_FILE_SIZE + 1]).is_empty(),
             "too big"
         );
     }

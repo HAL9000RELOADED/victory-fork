@@ -120,8 +120,8 @@ pub use lower::set_host_max_wave;
 pub use rect::rect_list_gs;
 pub use shader::{
     MEMORY_FAULTS, MEMORY_PAGES, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS, SLOT_MEMORY, SLOT_STRIDES,
-    SLOT_STRIDES_COUNT, USER_DATA_SPACE, USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS,
-    set_view_heap_limit, view_heap_limit,
+    SLOT_STRIDES_COUNT, USER_DATA_SPACE, USER_DISPATCH_SPREAD, USER_DISPATCH_THREADS, USER_MEMORY_BASE,
+    USER_VIEW_ADDRESS, USER_VIEW_BIAS, set_view_heap_limit, view_heap_limit,
 };
 
 /// The loop limit without an override: 2^20.
@@ -274,6 +274,21 @@ pub struct HostShader {
     pub root_uavs: Vec<u8>,
     /// Heap descriptors that can be selected from root state at bind time.
     pub root_indexed_views: Vec<crate::resource::RootIndexedView>,
+    /// Table descriptors (root parameter, dword offset in the table) whose
+    /// buffer the shader reads or writes sixteen bits a channel
+    /// (`buffer_load_format_d16_*`, `buffer_store_format_d16_*`), in
+    /// order. On the console each channel's 16 bits move as they are
+    /// through a 16-bit float view and through a 16-bit integer one alike
+    /// (the title keeps half floats, and indices beside them, in
+    /// `R16G16B16A16_UINT` and `R16_UINT` buffers). The DXIL moves them as
+    /// unsigned integers, which an unsigned 16-bit view carries unchanged;
+    /// the host shows the shader a 16-bit float or signed buffer view at
+    /// these places as the unsigned format of the same layout.
+    /// shortcut: a view in a normalised 16-bit format, whose values the
+    /// console would convert to halves, is read as its integers; a
+    /// descriptor picked at run time keeps the float path (its slot, and so
+    /// its format, is known only then).
+    pub half_views: Vec<(u8, u32)>,
 }
 
 impl HostShader {
@@ -288,6 +303,21 @@ impl HostShader {
             .unwrap_or(0);
         n.next_multiple_of(4)
     }
+}
+
+/// A dispatch of `(x, y, z)` groups as the host runs it: `(row, asked x, gx,
+/// gy, gz)`. Spread across z when `can_spread`, `x` > 65,535 and `z` == 1
+/// ([`USER_DISPATCH_SPREAD`]); else `row` 0 and the counts as asked (upstream
+/// VIctory pull request #2312's `spread_groups`).
+pub fn spread_groups(x: u32, y: u32, z: u32, can_spread: bool) -> (u32, u32, u32, u32, u32) {
+    if can_spread && x > 65_535 && z == 1 {
+        let rows = x.div_ceil(65_535);
+        if rows <= 65_535 {
+            let row = x.div_ceil(rows);
+            return (row, x, row, y, rows);
+        }
+    }
+    (0, x, x, y, z)
 }
 
 /// One dword of user data and the root parameter that fills it.
@@ -348,6 +378,25 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
     emit(&c, &native, &p, &st, &io, &res)
 }
 
+thread_local! {
+    /// [`with_wave_wide`]'s choice, for this thread's translations.
+    static WAVE_WIDE_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` (a translation) with the wave-wide form of a wave64 compute
+/// program on a host of 32-lane waves allowed, as `VICTORY_WAVE_WIDE=1`
+/// allows it for all, for one program chosen by its hash
+/// (`victory-gpu`'s `VICTORY_WAVE_WIDE_ONLY`). The form is still tried only
+/// after the exact ones. (After commit a416e392 of pull request #823 by
+/// Felix2180: the water's transmission volumetrics, particle visibility and
+/// the reflection pass's tiling come out of it with 32-lane waves.)
+pub fn with_wave_wide<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let before = WAVE_WIDE_HERE.replace(on);
+    let out = f();
+    WAVE_WIDE_HERE.set(before);
+    out
+}
+
 /// Emits a program whose earlier stages already ran.
 pub fn emit(
     c: &Container,
@@ -404,17 +453,45 @@ pub fn emit(
         };
         // The program in two other forms: without its early-outs, and
         // without any branch that only skips code no lane is left for.
-        let form = |p: Option<ir::Program>| {
-            p.and_then(|p| {
-                let st = structure::structure(&p).ok()?;
-                let io = io::raise(&p, native).ok()?;
-                let res = resource::track(&p, &native.layout, native.stage, Some(&st)).ok()?;
-                Some((p, st, io, res))
-            })
+        // `VICTORY_WAVE_WHY`: why a form is missing (no such branch, or the
+        // stage that refused the changed program, with its reason).
+        let form_why = std::env::var_os("VICTORY_WAVE_WHY").is_some();
+        let form = |label: &str, p: Option<ir::Program>| {
+            let say = |what: &dyn std::fmt::Display| {
+                if form_why {
+                    eprintln!("WAVE64-FORM {label}: {what}");
+                }
+            };
+            let Some(p) = p else {
+                say(&"not made (no such branch in the program, or its blocks could not be made reducible)");
+                return None;
+            };
+            let st = match structure::structure(&p) {
+                Ok(st) => st,
+                Err(e) => {
+                    say(&format_args!("structure: {e}"));
+                    return None;
+                }
+            };
+            let io = match io::raise(&p, native) {
+                Ok(io) => io,
+                Err(e) => {
+                    say(&format_args!("io: {e}"));
+                    return None;
+                }
+            };
+            let res = match resource::track(&p, &native.layout, native.stage, Some(&st)) {
+                Ok(res) => res,
+                Err(e) => {
+                    say(&format_args!("resources: {e}"));
+                    return None;
+                }
+            };
+            Some((p, st, io, res))
         };
         let forms = [
-            ("without early-outs", form(ir::without_early_outs(p))),
-            ("without skips", form(ir::without_skips(p, false))),
+            ("without early-outs", form("without early-outs", ir::without_early_outs(p))),
+            ("without skips", form("without skips", ir::without_skips(p, false))),
         ];
         for (name, f) in &forms {
             if let Some((p, st, io, res)) = f {
@@ -430,7 +507,7 @@ pub fn emit(
         // lost the card in a submission of two programs that had just moved to it
         // (`ptfx_CS_lightAtlas_Sprite` and `_Trail`). The 32-lane programs' form below, which
         // has no barrier, stays on.
-        let wide_on = std::env::var_os("VICTORY_WAVE_WIDE").is_some_and(|v| v == "1");
+        let wide_on = std::env::var_os("VICTORY_WAVE_WIDE").is_some_and(|v| v == "1") || WAVE_WIDE_HERE.get();
         // `VICTORY_WAVE_WIDE=last`: the same form, but only for programs that every other
         // form below leaves at 64 lanes (on a 32-lane host those are refused outright), so
         // the programs the approximate forms already take keep their barrier-free form.
@@ -445,7 +522,7 @@ pub fn emit(
                 // lane runs, where the two host waves can exchange.
                 // (`VICTORY_WAVE_DEEP_SKIPS=0` and `VICTORY_WAVE_WIDE=0` turn the two off.)
                 let deep_on = std::env::var_os("VICTORY_WAVE_DEEP_SKIPS").is_none_or(|v| v != "0");
-                let deep = if deep_on { form(ir::without_skips(p, true)) } else { None };
+                let deep = if deep_on { form("without skips, scalars followed", ir::without_skips(p, true)) } else { None };
                 if let Some((p, st, io, res)) = &deep {
                     let again = emit_program(c, native, p, st, io, res);
                     report("without skips, scalars followed", &again);
@@ -518,7 +595,7 @@ pub fn emit(
         }
         if wide_last {
             let deep_on = std::env::var_os("VICTORY_WAVE_DEEP_SKIPS").is_none_or(|v| v != "0");
-            let deep = if deep_on { form(ir::without_skips(p, true)) } else { None };
+            let deep = if deep_on { form("without skips, scalars followed", ir::without_skips(p, true)) } else { None };
             let bases = [
                 deep.as_ref().map(|f| &f.0),
                 forms[1].1.as_ref().map(|f| &f.0),
@@ -534,6 +611,75 @@ pub fn emit(
             }
         }
     }
+    // Native wave64 compute (`host_max_wave() != 32`) whose cross-lane code
+    // (`half_sum`, or a lane mask holding lanes outside EXEC) sits where not
+    // every lane runs: retry without early-outs/skips and, if still needed,
+    // with enclosing per-lane branches taken wave-wide (`widen`). Unlike
+    // two-wave32 emulation, every console wave is already one host wave, so
+    // none of these forms adds a group barrier.
+    let original = if stuck
+        && native.stage == HwStage::Cs
+        && native.wave64
+        && lower::host_max_wave() != 32
+        && matches!(&original, Err(ShaderError::Unsupported { what, .. }) if lower::needs_every_lane(what))
+    {
+        let why = std::env::var_os("VICTORY_WAVE_WHY").is_some();
+        let deep_on = std::env::var_os("VICTORY_WAVE_DEEP_SKIPS").is_none_or(|v| v != "0");
+        let wide_on = std::env::var_os("VICTORY_WAVE_WIDE").is_none_or(|v| v != "0");
+        let form = |p: Option<ir::Program>| {
+            p.and_then(|p| {
+                let st = structure::structure(&p).ok()?;
+                let io = io::raise(&p, native).ok()?;
+                let res = resource::track(&p, &native.layout, native.stage, Some(&st)).ok()?;
+                Some((p, st, io, res))
+            })
+        };
+        let mut out = original;
+        let forms = [
+            ("without early-outs", form(ir::without_early_outs(p))),
+            ("without skips", form(ir::without_skips(p, false))),
+            (
+                "without skips, scalars followed",
+                if deep_on { form(ir::without_skips(p, true)) } else { None },
+            ),
+        ];
+        for (name, f) in &forms {
+            if let Some((fp, fst, fio, fres)) = f {
+                lower::take_needs();
+                let again = emit_program(c, native, fp, fst, fio, fres);
+                if why {
+                    match &again {
+                        Ok((_, wave)) => eprintln!("WAVE64-NATIVE-RETRY {name}: wave {wave:?}"),
+                        Err(e) => eprintln!("WAVE64-NATIVE-RETRY {name}: {e}"),
+                    }
+                }
+                if again.is_ok() {
+                    out = again;
+                    break;
+                }
+            }
+        }
+        if out.is_err() && wide_on {
+            let base = forms
+                .iter()
+                .rev()
+                .find_map(|(_, f)| f.as_ref().map(|x| &x.0))
+                .unwrap_or(p);
+            let again = widen(c, native, base, why);
+            if why {
+                match &again {
+                    Ok((_, wave)) => eprintln!("WAVE64-NATIVE-RETRY wave-wide branches: wave {wave:?}"),
+                    Err(e) => eprintln!("WAVE64-NATIVE-RETRY wave-wide branches: {e}"),
+                }
+            }
+            if again.is_ok() {
+                out = again;
+            }
+        }
+        out
+    } else {
+        original
+    };
     // SCC of a mask operation joined with a scalar test behind a per-lane skip (the 32-lane
     // trace programs): right once the wave takes that skip together ([`widen`]; the
     // lowering has named the skipped blocks).
@@ -547,6 +693,29 @@ pub fn emit(
             match again {
                 Ok(_) => again,
                 Err(_) => emit_program(c, native, p, st, io, res),
+            }
+        }
+        // A lane write or read where the lane it names may not be ([`lower::LANE_ELSEWHERE`]):
+        // right once the wave takes the branches around it together, so that every lane is
+        // there. Where the host's waves are the console's that costs no barrier; a console
+        // wave run as two host waves has had its other forms tried above. Failing that, the
+        // whole of this once more as before: among the lanes that are there.
+        Err(ShaderError::Unsupported { what, .. })
+            if native.stage == HwStage::Cs && what == lower::LANE_ELSEWHERE =>
+        {
+            let why = std::env::var_os("VICTORY_WAVE_WHY").is_some();
+            let halves = native.wave64 && lower::host_max_wave() == 32;
+            let again = if halves { None } else { Some(widen(c, native, p, why)) };
+            if why {
+                match &again {
+                    Some(Ok(_)) => eprintln!("LANE-ELSEWHERE branches taken wave-wide"),
+                    Some(Err(e)) => eprintln!("LANE-ELSEWHERE lanes as they stand: wave-wide, {e}"),
+                    None => eprintln!("LANE-ELSEWHERE lanes as they stand: two host waves"),
+                }
+            }
+            match again {
+                Some(Ok(r)) => Ok(r),
+                _ => return lower::with_lanes_as_they_stand(|| emit(c, native, p, st, io, res)),
             }
         }
         other => other,
@@ -649,6 +818,11 @@ fn emit_program(
     let pixel = native.stage == HwStage::Ps;
     let mut inputs = sig(FourCC::ISG1)?;
     let mut outputs = sig(FourCC::OSG1)?;
+    // DXIL reads SV_Coverage via `dx.op.coverage` (NotInSig); keep it out of
+    // pixel ISG1 if a console container listed it there.
+    if pixel {
+        inputs.retain(|e| e.kind != 14);
+    }
     // Interpolation as DXC declares it by default; pixel inputs that are
     // read get the mode their barycentrics say.
     let interpolated = if pixel { &mut inputs } else { &mut outputs };
@@ -657,7 +831,7 @@ fn emit_program(
             (3, _) => 4,
             // Constant, as DXC declares it (the AMD compiler crashed on a
             // front face without a mode).
-            (13, _) => 1,
+            (4 | 5 | 13, _) => 1,
             // Until a read says which mode (`lower`).
             (28, _) => 2,
             (0 | 6 | 7, 9) => 2,
@@ -730,6 +904,7 @@ fn emit_program(
         root_srvs: l.root_srvs,
         root_uavs: l.root_uavs,
         root_indexed_views: res.root_indexed_views.clone(),
+        half_views: l.half_views,
     };
     Ok((shader, wave_size))
 }
@@ -1107,6 +1282,7 @@ mod tests {
             root_srvs: Vec::new(),
             root_uavs: Vec::new(),
             root_indexed_views: Vec::new(),
+            half_views: Vec::new(),
         };
         let file = |var: &str, stage| {
             std::env::var(var).ok().map(|p| super::HostShader {
@@ -1119,6 +1295,7 @@ mod tests {
                 root_srvs: Vec::new(),
                 root_uavs: Vec::new(),
                 root_indexed_views: Vec::new(),
+                half_views: Vec::new(),
             })
         };
         let ps = file("VICTORY_REF_PS", crate::HwStage::Ps).unwrap_or(ps);
@@ -1405,6 +1582,7 @@ mod tests {
             root_srvs: l.root_srvs,
             root_uavs: l.root_uavs,
             root_indexed_views: Vec::new(),
+            half_views: l.half_views,
         };
         let (root, pso) = host.compute_pipeline(&cs).unwrap();
         // Twelve dwords: the loads below run across the view's end.
@@ -1558,6 +1736,7 @@ mod tests {
                 root_srvs: l.root_srvs,
                 root_uavs: l.root_uavs,
                 root_indexed_views: Vec::new(),
+                half_views: l.half_views,
             };
             let (root, pso) = host.compute_pipeline(&cs).unwrap();
             let inputs: Vec<u32> = [
@@ -1718,6 +1897,7 @@ mod tests {
                 root_srvs: l.root_srvs,
                 root_uavs: l.root_uavs,
                 root_indexed_views: Vec::new(),
+                half_views: l.half_views,
             };
             // 32 dwords = 128 bytes = 8 elements of stride 16.
             let data: Vec<u32> = (0..32).map(|i| 1000 + i).collect();
