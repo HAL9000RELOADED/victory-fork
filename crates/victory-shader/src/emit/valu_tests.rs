@@ -82,7 +82,7 @@ const fn buffer_store_dword(vdata: u8, srsrc: u8, byte_off: u16) -> [u32; 2] {
     ]
 }
 
-const fn sgpr(n: u8) -> u16 {
+pub(super) const fn sgpr(n: u8) -> u16 {
     n as u16
 }
 
