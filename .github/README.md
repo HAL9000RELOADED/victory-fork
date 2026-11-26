@@ -27,8 +27,8 @@ its author pushes) only when the test suites show no new failure on the test mac
   512 KiB limit; here the limit is 2 MiB (run logs 64 MiB, gzipped 32 MiB).
 - **Test machine:** Radeon RX 7900 XTX (RDNA 3), driver 32.0.32015.7029, Windows 10 Pro 22H2 (19045),
   i7-13700KF, 96 GB RAM, Rust 1.98.1 MSVC.
-- **Tests on that machine** (one run of the whole merged tree, 2026-11-26): `victory-shader` 297 passed,
-  0 failed; `victory-gpu` 225 passed, 0 failed. The same suites on fxceless `main` alone: 27 failures
+- **Tests on that machine** (whole merged tree on fxceless `4c60466`, 2026-11-27): `victory-shader` 298 passed,
+  0 failed; `victory-gpu` 229 passed, 0 failed (one test left out, see below). The same suites on fxceless `main` alone: 27 failures
   (26 shader tests that need shader model 6.6, which Windows 10's own D3D12 runtime does not give —
   fixed by the Agility SDK of #402 — and one `victory-gpu` test). No test that passes on fxceless
   `main` fails here.
@@ -38,6 +38,10 @@ its author pushes) only when the test suites show no new failure on the test mac
   at 4K, 30 in menus. Those sessions ran on a tree close to this one, not yet on this exact commit.
 - **Known on Windows 10 only:** `victory-loader`'s `crash::tests::unwinds_like_the_system_walk` fails
   locally (also on fxceless `main`); it passes on the CI runner.
+- **Crashes on the RX 7900 XTX, also on fxceless `main`:** `victory-gpu`'s
+  `tiles::tests::card_wrote_failure_does_not_poison_card_mask` ends the test process with an access
+  violation (3 of 3 runs) since `VICTORY_TILES_SMALL_WHEN_FULL_MB` defaults to 512 (fxceless `30c14669`);
+  the other 229 `victory-gpu` tests pass. It passes on the CI runner (WARP).
 
 ## Pull requests merged here
 
