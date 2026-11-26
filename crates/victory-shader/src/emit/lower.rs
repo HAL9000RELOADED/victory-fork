@@ -995,12 +995,18 @@ fn lds_meetings(p: &crate::ir::Program, st: &Structured, all: &[bool]) -> Option
     }
     // A region that reads and writes LDS is still taken when it only raises flags
     // (`lds_flag_region`): a read that misses the other host wave's write changes nothing
-    // the region leaves behind.
+    // the region leaves behind. (After DrTardis1963 1b5c3a1e; VICTORY_LDS_FLAGS=0: off.)
     let flags_on = std::env::var_os("VICTORY_LDS_FLAGS").is_none_or(|v| v != "0");
-    for r in (0..n).filter(|&r| reads[r] && writes[r]).collect::<Vec<_>>() {
-        let blocks: Vec<usize> = (0..n).filter(|&b| !all[b] && find(&mut region, b) == r).collect();
-        if !(flags_on && lds_flag_region(p, st, &blocks)) {
-            if std::env::var_os("VICTORY_WAVE_WHY").is_some() {
+    let unflagged: Vec<usize> = (0..n)
+        .filter(|&r| reads[r] && writes[r])
+        .filter(|&r| {
+            let blocks: Vec<usize> = (0..n).filter(|&b| !all[b] && find(&mut region, b) == r).collect();
+            !(flags_on && lds_flag_region(p, st, &blocks))
+        })
+        .collect();
+    if !unflagged.is_empty() {
+        if std::env::var_os("VICTORY_WAVE_WHY").is_some() {
+            for r in (0..n).filter(|&r| reads[r] && writes[r]) {
                 let mut list = Vec::new();
                 for (b, block) in p.blocks.iter().enumerate().take(n) {
                     if all[b] || find(&mut region, b) != r {
