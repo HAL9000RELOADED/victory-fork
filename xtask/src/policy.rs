@@ -28,10 +28,21 @@ const ALLOWED_NAMES: &[&str] = &[
 ];
 
 /// Paths explicitly exempted, with a reason. Keep this empty if at all possible.
-const EXCEPTIONS: &[(&str, &str)] = &[(
-    "crates/victory-formats/src/bcpack-tables.bin",
-    "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
-)];
+const EXCEPTIONS: &[(&str, &str)] = &[
+    (
+        "crates/victory-formats/src/bcpack-tables.bin",
+        "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
+    ),
+    // Integration branch of HAL9000RELOADED/victory-fork only (not upstream):
+    (
+        "NOTICE",
+        "Apache-2.0 attribution for the TuxBox port merged from a fork PR: text the licence requires, not an asset",
+    ),
+    (
+        "crates/victory-shader/src/emit/lower.rs",
+        "translator source past 512 KB from several merged PRs at once: Rust text, not an asset",
+    ),
+];
 
 /// Run logs: the layer's own log of a run, scrubbed of names, kept under
 /// `diagnostics/` by the owner's decision (2026-11-26; docs/asset-policy.md).
