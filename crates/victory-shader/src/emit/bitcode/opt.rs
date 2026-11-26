@@ -1293,7 +1293,8 @@ mod tests {
             (4, 0b01001, false, true, 15),
             (4, 0b10001, false, true, 15),
             (4, 0b00001, true, true, 15),
-            (4, 0b00111, false, false, 15),
+            // Not grouped: narrowed too since fxceless main 0a40a00a (`narrow_raw_loads`).
+            (4, 0b00111, false, false, 7),
         ] {
             let mut s = Shader::new(false);
             let b = s.entry;
