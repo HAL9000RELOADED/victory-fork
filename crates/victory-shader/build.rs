@@ -31,7 +31,34 @@ fn fnv(state: &mut [u64; 2], bytes: &[u8]) {
     }
 }
 
+/// The D3D12 Agility SDK for this crate's unit-test executable
+/// (`src/agility.rs`): `cfg(agility_runtime)` when the runtime is in this
+/// profile's `D3D12\` folder, so that the tests name it only when it is
+/// there (with the exports but no `D3D12Core.dll`, device creation fails).
+/// The exports themselves are a linker directive in `src/agility.rs`, which
+/// only the unit-test executable has: a link argument from here would reach
+/// the integration tests too, which lack the symbols. A missing file is not
+/// watched (it would rerun this every build): after staging the runtime,
+/// touch this file.
+fn agility() {
+    println!("cargo::rustc-check-cfg=cfg(agility_runtime)");
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+    // OUT_DIR is <target>/<profile>/build/<package>-<hash>/out.
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
+    let Some(profile) = out.ancestors().nth(3) else {
+        return;
+    };
+    let core = profile.join("D3D12").join("D3D12Core.dll");
+    if core.exists() {
+        println!("cargo::rerun-if-changed={}", core.display());
+        println!("cargo::rustc-cfg=agility_runtime");
+    }
+}
+
 fn main() {
+    agility();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
