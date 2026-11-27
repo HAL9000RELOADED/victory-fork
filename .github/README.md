@@ -1,5 +1,8 @@
 # VIctory — integration fork (RX 7900 XTX / Windows 10)
 
+> **Not updated any more (since 2026-11-27).** The tree below is the last merge, `354579e`, of fxceless `9a9091d`
+> and the pull requests listed; work continues on [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX).
+
 This fork tracks [fxceless/victory-fork](https://github.com/fxceless/victory-fork) (itself a fork of
 [Marvisak/VIctory](https://github.com/Marvisak/VIctory), GPL-3.0-or-later) and **merges into one tree the
 open pull requests of the other contributors** that were tested on an AMD card under Windows 10.
