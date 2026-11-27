@@ -833,6 +833,8 @@ fn v_cmp_u64_and_i64_order_by_the_high_dword() {
 /// bits, so a driver that takes fast-math operands as never NaN cannot fold
 /// them away.
 #[test]
+// (the IEEE definitions as written: with NaNs `a < b || a > b` is not `a != b`)
+#[allow(clippy::neg_cmp_op_on_partial_ord, clippy::nonminimal_bool, clippy::double_comparisons)]
 fn every_f32_comparison_answers_nans_as_ieee() {
     let nan = f32::NAN.to_bits();
     let snan = 0x7F80_0001u32;
