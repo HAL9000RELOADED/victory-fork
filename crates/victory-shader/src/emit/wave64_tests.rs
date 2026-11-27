@@ -363,7 +363,7 @@ fn a_wave_or_inside(skip: u32, name: &str) {
     // ... and the lowering names the block, around which that branch is the one to widen
     let needs = lower::take_needs();
     let st = structure::structure(&p).expect("structure");
-    assert_eq!(lower::branches_around(&st, &needs), Some(vec![branch]));
+    assert_eq!(lower::branches_around_with_loop_exits(&st, &needs, true), Some(vec![branch]));
     // (taken, past the body, when every lane's bit is clear)
     assert_eq!(st.wave_any[branch], Some(false));
     // wave-wide, every lane runs the reduction (EXEC stays a guard on what it does there)
@@ -611,6 +611,9 @@ fn scc_of_a_mask_operation_joined_with_a_scalar_test_needs_the_skip_wave_wide() 
     }
     eprintln!("ran on the hardware device: the inner test's SCC for every lane once some lane is inside");
 }
+
+#[path = "wave64_after_loop.rs"]
+mod after_loop;
 
 /// Fork pull request #646 (mynzjerko): a spilled 64-thread wave64 compute program, as the
 /// structure builder's, dispatched by a `DispatchX` that counts threads
@@ -1058,9 +1061,10 @@ fn expected_bpermute(threads: u32, offset: u16, xor_mask: u32, active_below: u32
             if t >= active_below {
                 return 0x5555_5555;
             }
+            // within the lane's own 32-lane half (see `a_backward_permute_reads_within_the_lanes_half`)
             let wave_off = t & !63;
             let addr = (t ^ xor_mask).wrapping_shl(2).wrapping_add(u32::from(offset));
-            let src_lane = (addr >> 2) & 63;
+            let src_lane = (t & 32) | ((addr >> 2) & 31);
             let src_thread = wave_off + src_lane;
             if src_thread < threads && src_thread < active_below {
                 src_thread + 1000
@@ -1091,7 +1095,7 @@ fn bpermute_small_wave64_group_returns_zero_for_upper_lanes() {
 }
 
 #[test]
-fn bpermute_cross_half_on_wave32_exchanges_all_64_lanes_and_guards() {
+fn bpermute_on_wave32_reads_within_each_half_and_guards() {
     for (threads, offset) in [(64u32, 0u16), (64, 4), (128, 0)] {
         let prog = bpermute_program(threads, offset, false, 0);
         let p = ir::build(&prog.code, prog.wave64, prog.vgprs).expect("ir::build");
@@ -1131,55 +1135,6 @@ fn bpermute_partial_tail_wave_returns_zero_for_missing_lanes() {
         let want = expected_bpermute(96, 0, xor_mask, active_below);
         assert_eq!(got, want, "partial tail [96]: xor={xor_mask}, active<{active_below}");
     }
-}
-
-#[test]
-fn bpermute_in_lane_branch_widens_and_lds_overflow_refuses() {
-    // (a) `ds_bpermute_b32` inside a per-lane branch triggers `needs_every_lane`
-    // and succeeds once the branch is widened with `structure_wide`.
-    let prog = bpermute_program(64, 0, true, 0);
-    let p = ir::build(&prog.code, prog.wave64, prog.vgprs).expect("ir::build");
-    let branch = (0..p.blocks.len())
-        .find(|&b| p.blocks[b].insts.last().is_some_and(|i| i.name() == "s_cbranch_execz"))
-        .expect("the skip");
-    lower::take_needs();
-    let per_lane = lowered(&prog, &p, &HashSet::new());
-    let err = match per_lane {
-        Err(ShaderError::Unsupported { what, .. }) => what,
-        other => panic!("expected unsupported refusal, got {:?}", other.err()),
-    };
-    assert_eq!(err, "a lane permute where not every lane runs");
-    assert!(lower::needs_every_lane(err));
-    let st = structure::structure(&p).expect("structure");
-    assert_eq!(
-        lower::branches_around(&st, &lower::take_needs()),
-        Some(vec![branch])
-    );
-
-    let shader = lowered(&prog, &p, &HashSet::from([branch])).expect("widened lower");
-    if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
-        let mut copy = shader.dxil.clone();
-        v.validate(&mut copy).expect("DXIL validation failed");
-    }
-    let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(got) = on_the_card_uav(&shader, [32, 40], 64) {
-        let want = expected_bpermute(64, 0, 32, 40);
-        assert_eq!(got, want, "widened lane-branch bpermute");
-    }
-
-    // (b) Pre-allocated 32 KiB LDS leaves no room for the 64-dword/wave scratch.
-    let big_lds = bpermute_program(128, 0, false, 32768);
-    let p_big = ir::build(&big_lds.code, big_lds.wave64, big_lds.vgprs).expect("ir::build");
-    let overflow = lowered(&big_lds, &p_big, &HashSet::new());
-    assert!(
-        matches!(
-            &overflow,
-            Err(ShaderError::Unsupported { what, .. })
-                if *what == "a lane permute across two host waves (not enough LDS)"
-        ),
-        "expected LDS overflow refusal, got {:?}",
-        overflow.err()
-    );
 }
 
 /// Wave64 compute groups whose size is not a multiple of 32 (e.g. 48 = 32 + 16,
@@ -2052,4 +2007,42 @@ fn the_console_threads_of_a_two_dimensional_group_are_each_given_once() {
         eprintln!("the old rounding on this device: {written} of 64 dwords written");
     }
     eprintln!("ran on the hardware device: 64 of 64 console threads, each once");
+}
+
+/// `ds_bpermute_b32` in a console wave of 64 reads within the lane's own 32-lane half: GFX10
+/// permutes the two halves on their own (LLVM's `supportsWaveWideBPermute`, Mesa ACO's
+/// `emit_bpermute`). Lane t names lane t ^ 33, in the other half, and reads lane t ^ 1. Lowered
+/// for 64-lane and 32-lane host waves alike; before, the first read t ^ 33 and the second
+/// refused ("a lane permute across two host waves"). From Belobug PR #363.
+#[test]
+fn a_backward_permute_reads_within_the_lanes_half() {
+    let body = [
+        0x3A08_00A1, // v_xor_b32 v4, 33, v0
+        0x3408_0882, // v_lshlrev_b32 v4, 2, v4
+        0xDACC_0000,
+        0x0200_0004, // ds_bpermute_b32 v2, v4, v0
+        0xBF8C_C07F, // s_waitcnt lgkmcnt(0)
+        0x3402_0082, // v_lshlrev_b32 v1, 2, v0
+        0xE070_1000,
+        0x8002_0201, // buffer_store_dword v2, v1, s[8:11], 0 offen
+    ];
+    let mut ran = Vec::new();
+    for threads in [64, 128] {
+        let native = native_of(&body, true, threads);
+        let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
+        for host_wave in [64, 32] {
+            let shader = lowered_on(&native, &p, &HashSet::new(), host_wave)
+                .unwrap_or_else(|e| panic!("{threads} threads, host waves of {host_wave}: {e:?}"));
+            if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
+                v.validate(&mut shader.dxil.clone()).expect("DXIL validation failed");
+            }
+            let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(out) = whole_uav(&shader, [0, 0], threads) {
+                let want: Vec<u32> = (0..threads).map(|t| t ^ 1).collect();
+                assert_eq!(out, want, "{threads} threads, host waves of {host_wave}");
+                ran.push((threads, host_wave));
+            }
+        }
+    }
+    eprintln!("ran on the hardware device (threads, host wave): {ran:?}");
 }

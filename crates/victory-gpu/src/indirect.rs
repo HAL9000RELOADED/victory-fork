@@ -691,7 +691,7 @@ fn record_clamp_with(
 
 /// Whether the clamp of a title's indirect command (`bound`, `bound_ahead`)
 /// ends with `dst`'s transition alone, without the wait for every earlier
-/// shader write that came with it (`VICTORY_CLAMP_LEAN=1`; off by default;
+/// shader write that came with it (`VICTORY_CLAMP_LEAN`; on by default, `0` off;
 /// `alt`: twenty seconds with, twenty without, in turn, each change said in
 /// the log). The first barrier, which orders the title's argument and count
 /// passes before the clamp reads them, stays as it is.
@@ -716,7 +716,8 @@ fn clamp_lean() -> bool {
     match *MODE.get_or_init(|| match std::env::var("VICTORY_CLAMP_LEAN").as_deref() {
         Ok("1") => 1,
         Ok("alt") => 2,
-        _ => 0,
+        Ok("0") => 0,
+        _ => 1,
     }) {
         0 => false,
         1 => true,
@@ -735,7 +736,7 @@ fn clamp_lean() -> bool {
     }
 }
 
-/// Whether indirect draws are clamped a window at a time (`VICTORY_CLAMP_WINDOW=1`; off by default; `alt`: twenty
+/// Whether indirect draws are clamped a window at a time (`VICTORY_CLAMP_WINDOW`; on by default, `0` off; `alt`: twenty
 /// seconds with, twenty without, in turn, each change said in the log). After Marvisak/VIctory #3197 (Slay326),
 /// ported onto this clamp: a window is one pass of the clamp's gather mode whose table the CPU fills while the
 /// list is recorded.
@@ -762,7 +763,8 @@ pub(crate) fn clamp_window() -> bool {
     match *MODE.get_or_init(|| match std::env::var("VICTORY_CLAMP_WINDOW").as_deref() {
         Ok("1") => 1,
         Ok("alt") => 2,
-        _ => 0,
+        Ok("0") => 0,
+        _ => 1,
     }) {
         0 => false,
         1 => true,
@@ -1035,13 +1037,47 @@ pub(crate) const SEGMENT_PASSES: u32 = 64;
 /// budget word as their single clamps did, in draw order within a pass; what moves is that a pass charges its records
 /// when it runs, before passes of ours recorded between its draws: that shows only when the list's budget runs out
 /// (2^27 vertex instances or threads).
+/// The kind number of an indirect dispatch in gathered records.
+pub(crate) const DISPATCH_KIND: u32 = 2;
+
+/// Whether an open segment ([`gather_segments`]) outlives a dispatch
+/// (`VICTORY_SEGMENTS_ACROSS`; on unless `0`; `alt` in turn, twenty seconds
+/// each, said in the log): what a dispatch writes reaches later commands
+/// only after a barrier of the title's (D3D12's rule), so a dispatch marks
+/// the segment instead of ending it, and the title's next barrier or the
+/// next indirect draw ends it (`HostList::segments_dispatched`). Back-to-back
+/// tile dispatches with no barrier between them then share passes. (After
+/// avatarmanz/VIctory-7900XTX `VICTORY_INDIRECT_BATCH=2`.)
+pub(crate) fn segments_across() -> bool {
+    /// 0 off, 1 on, 2 in turn.
+    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    match *MODE.get_or_init(|| match std::env::var("VICTORY_SEGMENTS_ACROSS").as_deref() {
+        Ok("0") => 0,
+        Ok("alt") => 2,
+        _ => 1,
+    }) {
+        0 => false,
+        1 => true,
+        _ => {
+            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let on = (EPOCH.get_or_init(std::time::Instant::now).elapsed().as_secs() / 20) % 2 == 1;
+            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+            if LAST.swap(u8::from(on), std::sync::atomic::Ordering::Relaxed) != u8::from(on) {
+                tracing::info!("open segments outlive dispatches until a barrier (VICTORY_SEGMENTS_ACROSS=alt): {}", if on { "ON" } else { "off, as usual" });
+            }
+            on
+        }
+    }
+}
+
 pub(crate) fn gather_segments() -> bool {
     /// 0 off, 1 on, 2 in turn.
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     match *MODE.get_or_init(|| match std::env::var("VICTORY_GATHER_SEGMENTS").as_deref() {
         Ok("1") => 1,
         Ok("alt") => 2,
-        _ => 0,
+        Ok("0") => 0,
+        _ => 1,
     }) {
         0 => false,
         1 => true,
@@ -1067,7 +1103,8 @@ pub(crate) fn gather_dispatches() -> bool {
     match *MODE.get_or_init(|| match std::env::var("VICTORY_GATHER_DISPATCHES").as_deref() {
         Ok("1") => 1,
         Ok("alt") => 2,
-        _ => 0,
+        Ok("0") => 0,
+        _ => 1,
     }) {
         0 => false,
         1 => true,

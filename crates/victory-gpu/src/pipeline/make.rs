@@ -33,14 +33,24 @@ use super::host::{GraphicsState, HostPipeline, TargetFormats};
 /// two-layer vehicle wheel material, 57a3fad03cac36af and d5b9c94a30d7cf28;
 /// gfx41). Unlike `VICTORY_SKIP_PIPELINES`, in release builds too.
 fn denied(shaders: &[Arc<Shader>]) -> Option<&str> {
-    static LIST: OnceLock<Vec<String>> = OnceLock::new();
+    static LIST: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
     let list = LIST.get_or_init(|| {
-        std::env::var("VICTORY_DENY_PIPELINES")
+        // `VICTORY_DENY_PIPELINES_FILE=<path>`: more hashes, any 16 hex
+        // digits in the file (one a line, say), with the list's own.
+        let file = std::env::var_os("VICTORY_DENY_PIPELINES_FILE")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        let list: std::collections::HashSet<String> = std::env::var("VICTORY_DENY_PIPELINES")
             .unwrap_or_default()
-            .split(',')
+            .split(|c: char| !c.is_ascii_hexdigit())
+            .chain(file.split(|c: char| !c.is_ascii_hexdigit()))
             .map(|h| h.trim().to_ascii_lowercase())
-            .filter(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-            .collect()
+            .filter(|h| h.len() == 16)
+            .collect();
+        if !list.is_empty() {
+            tracing::info!(pipelines = list.len(), "shaders whose pipelines are not built (VICTORY_DENY_PIPELINES / _FILE)");
+        }
+        list
     });
     if list.is_empty() {
         return None;
@@ -186,8 +196,11 @@ pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
     }
     if p.made.get().is_none() {
         start(p, REQUESTED);
-        if p.graphics.is_none() && compute_waits() {
-            // Made here, or waited for while a worker makes it.
+        // A compute pipeline in the first 600 frames (the title's one-shot
+        // world and lighting set-up passes) or with `compute_waits`: made
+        // here, or waited for while a worker makes it, instead of dropping
+        // its dispatch after the frame's budget. `make` keeps its panic guard.
+        if p.graphics.is_none() && (compute_waits() || crate::frame::current() < 600) {
             p.make();
         } else {
             wait(p, crate::frame::current());
@@ -443,22 +456,17 @@ fn next() -> Arc<Pending> {
     }
 }
 
-/// Starts the workers (half the logical processors, 2 to 8) on first use.
+/// Starts the workers (the logical processors less 4, 4 to 14: 6 drained a
+/// cold library 35 % slower than 8 in run 353) on first use, at normal priority.
 fn workers() -> bool {
     static RUNNING: OnceLock<bool> = OnceLock::new();
     *RUNNING.get_or_init(|| {
         let mut running = false;
-        let workers = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 8));
+        let workers = std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(4).clamp(4, 14));
         for i in 0..workers {
             let spawned = std::thread::Builder::new()
                 .name(format!("victory-pipelines-{i}"))
                 .spawn(|| {
-                    // Below the title's own threads (loading, recording).
-                    // SAFETY: a plain call on our own thread.
-                    unsafe {
-                        use windows::Win32::System::Threading::*;
-                        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    }
                     loop {
                         next().make();
                         if WAITING.fetch_sub(1, Ordering::Relaxed) == 1 {
