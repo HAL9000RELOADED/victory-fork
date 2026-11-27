@@ -612,7 +612,63 @@ fn lane_uniform(p: &Program, st: &Structured, all: &[bool]) -> HashSet<Value> {
                             })
                         }
                         _ => true,
+                    }) && {
+                        // Implicit reads too (after #354): accumulator VGPRs, kept destination
+                        // halves of 16-bit writes, implicit VCC.
+                    // Check every register the instruction reads, including implicit
+                    // reads (accumulator VGPRs in `v_fmac_*`/`v_mac_*`/`v_dot*c_*`,
+                    // preserved destination halves on 16-bit writes, and implicit `VCC`
+                    // in VOP2 `v_cndmask_b32`/`v_add_co_ci_u32`/`v_div_fmas_f32`).
+                    // Since the instruction is unguarded, skip the implicit `EXEC` mask
+                    // (unless `EXEC` is an explicit source) and the old destination
+                    // VGPR(s) when the instruction fully overwrites them.
+                    let reads_exec_as_src = v.src.iter().any(|op| {
+                        matches!(op, Operand::Scalar { code, .. } if *code == EXEC || *code == EXEC + 1)
+                    });
+                    let reads_dst = name.contains("fmac")
+                        || name.contains("_mac_")
+                        || name.contains("dot2c")
+                        || name.contains("dot4c")
+                        || name.contains("dot8c")
+                        || name.contains("_mixlo_f16")
+                        || name.contains("_mixhi_f16")
+                        || (!name.starts_with("v_pk_")
+                            && !name.starts_with("v_cmp")
+                            && !name.starts_with("v_cvt_f32_")
+                            && !name.starts_with("v_cvt_u32_")
+                            && !name.starts_with("v_cvt_i32_")
+                            && (name.ends_with("_f16")
+                                || name.ends_with("_u16")
+                                || name.ends_with("_i16")
+                                || name.ends_with("_b16")
+                                || name.contains("cvt_f16_")
+                                || name.contains("cvt_u16_")
+                                || name.contains("cvt_i16_")
+                                || name.contains("cvt_norm_i16_")
+                                || name.contains("cvt_norm_u16_")));
+                    let overwritten_dst = |r: u8| {
+                        !reads_dst
+                            && matches!(
+                                v.dst,
+                                Some(Operand::Vector { reg, dwords })
+                                    if r >= reg && r < reg.saturating_add(dwords)
+                            )
+                            && !v.src.iter().any(|op| {
+                                matches!(
+                                    *op,
+                                    Operand::Vector { reg, dwords }
+                                        if r >= reg && r < reg.saturating_add(dwords)
+                                )
+                            })
+                    };
+                    inst.reads.iter().all(|&(reg, val)| match reg {
+                        Reg::V(r) if overwritten_dst(r) => true,
+                        Reg::V(_) => same.contains(&val),
+                        Reg::S(code) if (code == EXEC || code == EXEC + 1) && !reads_exec_as_src => true,
+                        Reg::S(_) => !is_mask(val) || same.contains(&val),
+                        Reg::Scc => true,
                     })
+                    }
                 }
                 Fields::Ds {
                     addr: Some(Operand::Vector { reg, .. }),
