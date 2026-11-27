@@ -19,16 +19,17 @@ affiliated with or endorsed by the game's developer or publisher.
 fxceless's new commits are merged in about every two hours; a pull request is taken (or taken again when
 its author pushes) only when the test suites show no new failure on the test machine.
 
-## Status (2026-11-27)
+## Status (2026-11-27, 09:00 UTC)
 
-- **Base:** fxceless `main` `4c60466` (2026-11-26 evening), plus 47 pull requests and the fixes below.
+- **Base:** fxceless `main` `9a9091d` (2026-11-27 05:28 UTC: the ray-tracing structure builder runs, the water
+  programs in paired form of #1419), plus the pull requests below, ported onto fxceless's new module layout.
 - **CI of this fork:** green (Clippy, Clippy with diagnostics, workspace tests, `victory-gpu` tests).
   fxceless `main` is red since `58de9bf` only because two source files passed the asset policy's
   512 KiB limit; here the limit is 2 MiB (run logs 64 MiB, gzipped 32 MiB).
 - **Test machine:** Radeon RX 7900 XTX (RDNA 3), driver 32.0.32015.7029, Windows 10 Pro 22H2 (19045),
   i7-13700KF, 96 GB RAM, Rust 1.98.1 MSVC.
-- **Tests on that machine** (whole merged tree on fxceless `4c60466`, 2026-11-27): `victory-shader` 298 passed,
-  0 failed; `victory-gpu` 229 passed, 0 failed (one test left out, see below). The same suites on fxceless `main` alone: 27 failures
+- **Tests on that machine** (whole merged tree on fxceless `9a9091d`, 2026-11-27): `victory-shader` 315 passed,
+  0 failed; `victory-gpu` 243 passed, 0 failed (one test left out, see below). The same suites on fxceless `main` alone: 27 failures
   (26 shader tests that need shader model 6.6, which Windows 10's own D3D12 runtime does not give —
   fixed by the Agility SDK of #402 — and one `victory-gpu` test). No test that passes on fxceless
   `main` fails here.
@@ -41,7 +42,7 @@ its author pushes) only when the test suites show no new failure on the test mac
 - **Crashes on the RX 7900 XTX, also on fxceless `main`:** `victory-gpu`'s
   `tiles::tests::card_wrote_failure_does_not_poison_card_mask` ends the test process with an access
   violation (3 of 3 runs) since `VICTORY_TILES_SMALL_WHEN_FULL_MB` defaults to 512 (fxceless `30c14669`);
-  the other 229 `victory-gpu` tests pass. It passes on the CI runner (WARP).
+  the other `victory-gpu` tests pass. It passes on the CI runner (WARP).
 
 ## Pull requests merged here
 
@@ -98,7 +99,11 @@ All by their authors, unchanged except where a merge conflict had to be resolved
 | [#1166](https://github.com/fxceless/victory-fork/pull/1166) | Fix Windows shader warm-up, wave permutes, and BVH residency | Lkxex |
 
 Conflicts resolved by hand, against fxceless `main` or against each other: #849, #129, #592 (since
-taken by fxceless itself), #558, #135, #219, #639, #1165, #1261. Of #1166 only the shader warm-up part
+taken by fxceless itself), #558, #135, #219, #639, #1165, #1261; with fxceless `9a9091d` also #354 (its
+implicit-read check now sits beside fxceless's own uniformity rules), #1030, #1191, #1261 (its group counter
+carries fxceless's paired form). #1191's test follows fxceless `0a40a00a`, which narrows every raw load.
+**From #615 the cross-half `ds_bpermute` is gone:** fxceless now reads `ds_bpermute` within each 32-lane
+half, as the RDNA ISA does (after Belobug #363); #615's tests were changed to that answer. Of #1166 only the shader warm-up part
 is here (its BVH and lane-permute changes are covered by fxceless `main` and #1165).
 
 **Not merged:** #1026 (already in fxceless `main`); #1140 (replaces the LDS analysis on an older base
